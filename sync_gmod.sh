@@ -7,39 +7,42 @@ DST="${DST:-/gmodserv/garrysmod}"
 STATE_DIR="${STATE_DIR:-/tmp/garrysmod}"
 BAK_DIR="$STATE_DIR/bak"
 MANAGED_LIST="$STATE_DIR/managed.list"
+CHECKSUMS="$STATE_DIR/checksums.txt"
 
 IGNORE_FILE="${IGNORE_FILE:-$SRC/.dockerignore}"
 INCLUDE_PREFIXES="${INCLUDE_PREFIXES:-}"
 
-GREEN='\033[32m'
-ORANGE='\033[33m'
-CYAN='\033[36m'
-RESET='\033[0m'
+POLL_INTERVAL="${POLL_INTERVAL:-2}"
 
-msg_new() { printf "${GREEN}[Hotload] new file uploaded: %s${RESET}\n" "$1" >&2; }
-msg_old() { printf "${ORANGE}[Hotload] old file loaded from backup: %s${RESET}\n" "$1" >&2; }
-msg_rep() { printf "${CYAN}[Hotload] replaced original file: %s${RESET}\n" "$1" >&2; }
+GREEN="$(printf '\033[32m')"
+ORANGE="$(printf '\033[33m')"
+CYAN="$(printf '\033[36m')"
+RESET="$(printf '\033[0m')"
+
+msg_new() { printf '%s[Hotload] new file uploaded: %s%s\n' "$GREEN" "$1" "$RESET" >&2; }
+msg_old() { printf '%s[Hotload] old file loaded from backup: %s%s\n' "$ORANGE" "$1" "$RESET" >&2; }
+msg_rep() { printf '%s[Hotload] replaced original file: %s%s\n' "$CYAN" "$1" "$RESET" >&2; }
+msg_del() { printf '%s[Hotload] file deleted: %s%s\n' "$ORANGE" "$1" "$RESET" >&2; }
 
 mkdir -p "$STATE_DIR" "$BAK_DIR"
-touch "$MANAGED_LIST"
+touch "$MANAGED_LIST" "$CHECKSUMS"
 
 ensure_dir() {
-  [ -d "$1" ] || mkdir -p "$1"
+  d="$1"
+  [ -d "$d" ] || mkdir -p "$d"
 }
 
 relpath() {
-  printf '%s' "${1#$SRC/}"
+  p="$1"
+  printf '%s' "$p" | sed "s#^$SRC/##"
 }
 
 is_included() {
+  r="$1"
   [ -z "$INCLUDE_PREFIXES" ] && return 0
-  local rr="${1#./}"
-  rr="${rr#/}"
-  rr="${rr//\/\//\/}"
-  
+  rr="$(printf '%s' "$r" | sed 's#^./##; s#//*#/#g; s#^/##')"
   for p in $INCLUDE_PREFIXES; do
-    p="${p#./}"
-    p="${p%/}"
+    p="$(printf '%s' "$p" | sed 's#^./##; s#/*$##')"
     case "$rr" in
       "$p"|"${p}/"*) return 0 ;;
     esac
@@ -48,55 +51,68 @@ is_included() {
 }
 
 is_ignored_by_dockerignore() {
+  r="$1"
   [ -f "$IGNORE_FILE" ] || return 1
-  local rr="${1#./}"
-  rr="${rr#/}"
-  rr="${rr//\/\//\/}"
-  
+  rr="$(printf '%s' "$r" | sed 's#^./##; s#//*#/#g; s#^/##')"
   while IFS= read -r pat || [ -n "$pat" ]; do
-    pat="${pat%"${pat##*[![:space:]]}"}"
+    pat="$(printf '%s' "$pat" | sed 's/[[:space:]]*$//')"
     [ -z "$pat" ] && continue
-    case "$pat" in \#*|!*) continue ;; esac
-    
-    pat="${pat#./}"
-    pat="${pat//\/\//\/}"
+    case "$pat" in \#*) continue ;; esac
+    case "$pat" in !*) continue ;; esac
+    pat="$(printf '%s' "$pat" | sed 's#^./##; s#//*#/#g')"
     case "$pat" in */) pat="${pat}*" ;; esac
-    
-    case "$rr" in $pat) return 0 ;; esac
+    case "$rr" in
+      $pat) return 0 ;;
+    esac
   done < "$IGNORE_FILE"
   return 1
 }
 
 should_sync() {
-  is_included "$1" || return 1
-  is_ignored_by_dockerignore "$1" && return 1
+  r="$1"
+  is_included "$r" || return 1
+  is_ignored_by_dockerignore "$r" && return 1
   return 0
 }
 
 is_managed() {
-  awk -v r="$1" '$0 == r {exit 0} END {exit 1}' "$MANAGED_LIST"
+  r="$1"
+  grep -Fqx "$r" "$MANAGED_LIST"
 }
 
 mark_managed() {
-  is_managed "$1" || printf '%s\n' "$1" >> "$MANAGED_LIST"
+  r="$1"
+  if ! is_managed "$r"; then
+    printf '%s\n' "$r" >> "$MANAGED_LIST"
+  fi
 }
 
 unmark_managed() {
-  local tmp="$STATE_DIR/managed.list.$$"
-  awk -v r="$1" '$0 != r' "$MANAGED_LIST" > "$tmp" 2>/dev/null || : > "$tmp"
+  r="$1"
+  tmp="$STATE_DIR/managed.list.unmark.$$"
+  : > "$tmp"
+  grep -Fvx "$r" "$MANAGED_LIST" > "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$MANAGED_LIST"
 }
 
 bak_orig_path() {
-  printf '%s/%s.orig' "$BAK_DIR" "$1"
+  r="$1"
+  printf '%s/%s.orig' "$BAK_DIR" "$r"
+}
+
+get_file_checksum() {
+  f="$1"
+  [ -f "$f" ] || return 1
+  md5sum "$f" 2>/dev/null | awk '{print $1}'
 }
 
 backup_original_if_needed() {
-  local dstf="$DST/$1"
-  local bakf="$(bak_orig_path "$1")"
-  
-  is_managed "$1" && return 1
-  
+  r="$1"
+  dstf="$DST/$r"
+  bakf="$(bak_orig_path "$r")"
+  if is_managed "$r"; then
+    return 1
+  fi
   if [ -f "$dstf" ] && [ ! -f "$bakf" ]; then
     ensure_dir "$(dirname "$bakf")"
     cp -p "$dstf" "$bakf"
@@ -106,124 +122,122 @@ backup_original_if_needed() {
 }
 
 deploy_file() {
-  local r="$(relpath "$1")"
+  srcf="$1"
+  r="$(relpath "$srcf")"
   should_sync "$r" || return 0
 
-  local dstf="$DST/$r"
+  dstf="$DST/$r"
   ensure_dir "$(dirname "$dstf")"
 
   if [ -f "$dstf" ]; then
     if backup_original_if_needed "$r"; then
-      cp -p "$1" "$dstf"
+      cp -p "$srcf" "$dstf"
       mark_managed "$r"
       msg_rep "$r"
       return 0
     fi
-    
-    cmp -s "$1" "$dstf" && return 0
-    
-    cp -p "$1" "$dstf"
+    if [ -f "$dstf" ] && cmp -s "$srcf" "$dstf"; then
+      return 0
+    fi
+    cp -p "$srcf" "$dstf"
     mark_managed "$r"
     msg_new "$r"
     return 0
   fi
 
-  cp -p "$1" "$dstf"
+  cp -p "$srcf" "$dstf"
   mark_managed "$r"
   msg_new "$r"
 }
 
 deploy_dir() {
-  local r="$(relpath "$1")"
+  srcd="$1"
+  r="$(relpath "$srcd")"
   should_sync "$r" || return 0
   ensure_dir "$DST/$r"
 }
 
 handle_delete_file() {
-  should_sync "$1" || return 0
+  r="$1"
+  should_sync "$r" || return 0
 
-  local dstf="$DST/$1"
-  local bakf="$(bak_orig_path "$1")"
+  dstf="$DST/$r"
+  bakf="$(bak_orig_path "$r")"
 
   if [ -f "$bakf" ]; then
     ensure_dir "$(dirname "$dstf")"
     cp -p "$bakf" "$dstf"
-    unmark_managed "$1"
-    msg_old "$1"
+    unmark_managed "$r"
+    msg_old "$r"
     return 0
   fi
 
-  if is_managed "$1"; then
+  if is_managed "$r"; then
     rm -f "$dstf" 2>/dev/null || true
-    unmark_managed "$1"
+    unmark_managed "$r"
+    msg_del "$r"
   fi
 }
 
-handle_delete_dir() {
-  local prefix="${1#./}"
-  prefix="${prefix//\/\//\/}"
-  prefix="${prefix%/}"
-  
-  should_sync "$prefix" || return 0
-
-  local tmp="$STATE_DIR/managed.list.$$"
-  awk -v prefix="$prefix/" '
-    index($0, prefix) == 1 {next}
-    {print}
-  ' "$MANAGED_LIST" > "$tmp"
-
-  awk -v prefix="$prefix/" 'index($0, prefix) == 1 {print}' "$MANAGED_LIST" | \
-    while IFS= read -r r; do
-      handle_delete_file "$r"
-    done
-  
-  mv -f "$tmp" "$MANAGED_LIST"
-  [ -d "$DST/$prefix" ] && rmdir "$DST/$prefix" 2>/dev/null || true
-}
-
 initial_sync() {
-  find "$SRC" -type d ! -path "$SRC" -exec sh -c '
-    for d; do
-      r="${d#'"$SRC"'/}"
-      if ./should_sync "$r"; then
-        ensure_dir "'"$DST"'/$r"
-      fi
-    done
-  ' sh {} +
+  find "$SRC" -type d -print | while IFS= read -r d; do
+    [ "$d" = "$SRC" ] && continue
+    deploy_dir "$d"
+  done
+find "$SRC" -type f -print | while IFS= read -r f; do
+    deploy_file "$f"
+  done
 
-  find "$SRC" -type f -exec sh -c '
-    for f; do
-      deploy_file "$f"
-    done
-  ' sh {} +
+  update_checksums
 }
 
-watch_loop() {
-  inotifywait -m -r \
-    -e create -e modify -e delete -e moved_to -e moved_from -e attrib \
-    --format '%e|%w%f' \
-    "$SRC" | while IFS='|' read -r ev full; do
-
-    [ "$full" = "$SRC" ] && continue
-    local r="$(relpath "$full")"
+update_checksums() {
+  tmp="$STATE_DIR/checksums.tmp.$$"
+  : > "$tmp"
+  
+  find "$SRC" -type f -print | while IFS= read -r f; do
+    r="$(relpath "$f")"
     should_sync "$r" || continue
+    checksum="$(get_file_checksum "$f" || echo "DELETED")"
+    printf '%s %s\n' "$checksum" "$r" >> "$tmp"
+  done
+  
+  mv -f "$tmp" "$CHECKSUMS"
+}
 
-    case "$ev" in
-      *CREATE*|*MOVED_TO*|*ATTRIB*|*MODIFY*)
-        if [ -d "$full" ]; then
-          deploy_dir "$full"
-        elif [ -f "$full" ]; then
-          deploy_file "$full"
-        fi
-        ;;
-      *DELETE*|*MOVED_FROM*)
-        if grep -qF "$r/" "$MANAGED_LIST" 2>/dev/null; then
-          handle_delete_dir "$r"
-        else
-          handle_delete_file "$r"
-        fi
-        ;;
-    esac
+poll_loop() {
+  echo "[Hotload] Starting polling mode (interval: ${POLL_INTERVAL}s)..." >&2
+  
+  while true; do
+    sleep "$POLL_INTERVAL"
+
+    tmp_new="$STATE_DIR/checksums.new.$$"
+    : > "$tmp_new"
+    
+    find "$SRC" -type f -print | while IFS= read -r f; do
+      r="$(relpath "$f")"
+      should_sync "$r" || continue
+      checksum="$(get_file_checksum "$f" || echo "DELETED")"
+      printf '%s %s\n' "$checksum" "$r" >> "$tmp_new"
+    done
+
+    while IFS=' ' read -r old_sum old_file || [ -n "$old_file" ]; do
+      new_sum="$(grep " $old_file$" "$tmp_new" 2>/dev/null | awk '{print $1}')"
+      
+      if [ -z "$new_sum" ]; then
+        handle_delete_file "$old_file"
+      elif [ "$old_sum" != "$new_sum" ]; then
+        deploy_file "$SRC/$old_file"
+      fi
+    done < "$CHECKSUMS"
+
+    while IFS=' ' read -r new_sum new_file || [ -n "$new_file" ]; do
+      if ! grep -q " $new_file$" "$CHECKSUMS" 2>/dev/null; then
+        deploy_file "$SRC/$new_file"
+      fi
+    done < "$tmp_new"
+
+    mv -f "$tmp_new" "$CHECKSUMS"
   done
 }
 
@@ -231,4 +245,4 @@ watch_loop() {
 ensure_dir "$DST"
 
 initial_sync
-watch_loop
+poll_loop
