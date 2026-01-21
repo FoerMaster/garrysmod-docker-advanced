@@ -108,7 +108,7 @@ print_update_box() {
   print_box "$RED" \
     "A newer server version is available (latest build $REMOTE_BUILD, branch $branch)." \
     "Please update your Docker image to the latest version:" \
-    "docker compose build --pull --no-cache && docker compose up -d"
+    "docker compose pull && docker compose up"
 }
 
 print_error_box() {
