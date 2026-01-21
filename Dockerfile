@@ -1,6 +1,7 @@
 FROM ubuntu:22.04
 
 LABEL MAINTAINER="FOER"
+LABEL org.opencontainers.image.description DESCRIPTION="Garry's Mod, Public, Build 21133562"
 
 # Base deps for SteamCMD (incl. i386 libs)
 RUN dpkg --add-architecture i386 \
@@ -22,6 +23,7 @@ RUN groupadd -g 1000 steam \
 # Copy scripts as root, set permissions
 COPY sync_gmod.sh /gmodserv/sync_gmod.sh
 COPY entrypoint.sh /gmodserv/entrypoint.sh
+COPY version /gmodserv/version
 RUN chmod +x /gmodserv/sync_gmod.sh /gmodserv/entrypoint.sh
 
 # Pre-create directories SteamCMD will write to, then hand ownership to steam
@@ -37,11 +39,37 @@ RUN curl -fsSL -o steamcmd_linux.tar.gz https://steamcdn-a.akamaihd.net/client/i
     && tar -xvzf steamcmd_linux.tar.gz \
     && rm steamcmd_linux.tar.gz
 
-RUN ./steamcmd.sh \
+ARG STEAM_BRANCH=public
+RUN set -eu; \
+    attempts=5; \
+    i=1; \
+    while [ "$i" -le "$attempts" ]; do \
+    echo "SteamCMD attempt $i/$attempts"; \
+    if [ "$STEAM_BRANCH" = "public" ] || [ -z "$STEAM_BRANCH" ]; then \
+    if ./steamcmd.sh \
     +force_install_dir /gmodserv \
     +login anonymous \
     +app_update 4020 validate \
-    +quit
+    +quit; then \
+    break; \
+    fi; \
+    else \
+    if ./steamcmd.sh \
+    +force_install_dir /gmodserv \
+    +login anonymous \
+    +app_update 4020 -beta "$STEAM_BRANCH" validate \
+    +quit; then \
+    break; \
+    fi; \
+    fi; \
+    if [ "$i" -eq "$attempts" ]; then \
+    echo "SteamCMD failed after $attempts attempts"; \
+    exit 1; \
+    fi; \
+    echo "SteamCMD failed, retrying in 15s..."; \
+    sleep 15; \
+    i=$((i + 1)); \
+    done
 
 # Run server
 WORKDIR /gmodserv

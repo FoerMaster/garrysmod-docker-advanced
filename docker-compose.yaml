@@ -18,5 +18,6 @@ services:
       GMOD_MAXPLAYERS: "16"
       GMOD_GAMEMODE: "sandbox"
       GMOD_MAP: "gm_construct"
-      GMOD_INSECURE: "true"
+      GMOD_INSECURE: "false"
+      POLL_INTERVAL: "2"
     hostname: gserver
