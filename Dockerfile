@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 LABEL MAINTAINER="FOER"
-LABEL org.opencontainers.image.description DESCRIPTION="Garry's Mod, Public, Build 21133562"
+LABEL DESCRIPTION="Garry's Mod, Public, Build 21133562"
 
 # Base deps for SteamCMD (incl. i386 libs)
 RUN dpkg --add-architecture i386 \
