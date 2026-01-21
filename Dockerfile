@@ -40,7 +40,7 @@ RUN curl -fsSL -o steamcmd_linux.tar.gz https://steamcdn-a.akamaihd.net/client/i
 RUN ./steamcmd.sh \
     +force_install_dir /gmodserv \
     +login anonymous \
-    +app_update 4020 validate \
+    +app_update 4020 -beta dev validate \
     +quit
 
 # Run server
