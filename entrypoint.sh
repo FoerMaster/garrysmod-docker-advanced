@@ -106,7 +106,7 @@ print_update_box() {
   local branch
   branch="$(resolve_branch)"
   print_box "$RED" \
-    "A newer server version is available (latest build $REMOTE_BUILD, branch $branch)." \
+    "A newer server version is available (latest build $REMOTE_BUILD, branch $branch) :)" \
     "Please update your Docker image to the latest version:" \
     "docker compose pull && docker compose up"
 }
